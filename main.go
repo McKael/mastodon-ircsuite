@@ -10,7 +10,6 @@ import (
 	"github.com/Xe/ln"
 	"github.com/caarlos0/env"
 	_ "github.com/joho/godotenv/autoload"
-	"github.com/kr/pretty"
 	"gopkg.in/irc.v1"
 )
 
@@ -122,6 +121,7 @@ func (s *Server) F() ln.F {
 	return ln.F{
 		"registered":  s.registered,
 		"remote_addr": s.conn.RemoteAddr().String(),
+		"nickname":    s.nickname,
 	}
 }
 
@@ -129,24 +129,12 @@ func (s *Server) HandleConn(ctx context.Context) {
 	defer s.conn.Close()
 	defer s.cancel()
 
+	s.nickname = "*"
+
 	for {
 		if (s.nick && s.user) && !s.registered {
-			s.iw.Writef(":%s 001 * :Welcome to an IRC relay!", s.cfg.ServerName)
+			s.iw.Writef(":%s 001 %s :Welcome to an IRC relay!", s.cfg.ServerName, s.nickname)
 			s.registered = true
-		}
-
-		msg, err := s.ir.ReadMessage()
-		if err != nil {
-			ln.Error(err, s.F(), ln.F{"action": "public_stream"})
-			return
-		}
-
-		pretty.Println(msg)
-
-		switch msg.Command {
-		case "NICK":
-			s.nick = true
-			s.nickname = msg.Params[0]
 
 			err := s.stream(ctx, "&user", "user", "")
 			if err != nil {
@@ -159,6 +147,20 @@ func (s *Server) HandleConn(ctx context.Context) {
 				ln.Error(err, s.F(), ln.F{"action": "public_stream"})
 				return
 			}
+		}
+
+		msg, err := s.ir.ReadMessage()
+		if err != nil {
+			ln.Error(err, s.F(), ln.F{"action": "public_stream"})
+			return
+		}
+
+		ln.Log(s.F(), ln.F{"verb": msg.Command})
+
+		switch msg.Command {
+		case "NICK":
+			s.nick = true
+			s.nickname = msg.Params[0]
 
 		case "USER":
 			s.user = true
@@ -169,7 +171,7 @@ func (s *Server) HandleConn(ctx context.Context) {
 			msg.Command = "PONG"
 			s.iw.WriteMessage(msg)
 		default:
-			s.iw.Writef(":%s 421 * :Unknown command %q", s.cfg.ServerName, msg.Command)
+			s.iw.Writef(":%s 421 %s :Unknown command %q", s.cfg.ServerName, s.nickname, msg.Command)
 			continue
 		}
 	}
