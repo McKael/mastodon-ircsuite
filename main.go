@@ -170,6 +170,18 @@ func (s *Server) HandleConn(ctx context.Context) {
 			msg.Host = s.cfg.ServerName
 			msg.Command = "PONG"
 			s.iw.WriteMessage(msg)
+		case "JOIN":
+			// hashtag streaming
+			target := msg.Params[0]
+			if target[0] != '#' {
+				s.iw.Writef("%s 404 %s :Unknown hashtag", s.cfg.ServerName, s.nickname)
+				continue
+			}
+
+			err = s.stream(ctx, target, "hashtag", target)
+			if err != nil {
+				ln.Error(err, s.F(), ln.F{"action": "hashtag_stream", "hashtag": target})
+			}
 		default:
 			s.iw.Writef(":%s 421 %s :Unknown command %q", s.cfg.ServerName, s.nickname, msg.Command)
 			continue
