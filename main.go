@@ -3,9 +3,14 @@ package main
 import (
 	"context"
 	"net"
+	"strings"
+	"sync"
 
+	"github.com/McKael/madon"
 	"github.com/Xe/ln"
 	"github.com/caarlos0/env"
+	_ "github.com/joho/godotenv/autoload"
+	"github.com/kr/pretty"
 	"gopkg.in/irc.v1"
 )
 
@@ -28,13 +33,13 @@ func main() {
 		ln.Fatal(ln.F{"err": err})
 	}
 
-	l, err := net.Listen(cfg.ServerAddr)
+	l, err := net.Listen("tcp", cfg.ServerAddr)
 	if err != nil {
 		ln.Fatal(ln.F{"err": err, "addr": cfg.ServerAddr})
 	}
 
 	for {
-		ctx := context.Context()
+		ctx := context.Background()
 		conn, err := l.Accept()
 		if err != nil {
 			ln.Error(err, ln.F{"addr": cfg.ServerAddr})
@@ -43,6 +48,7 @@ func main() {
 		ir := irc.NewReader(conn)
 		iw := irc.NewWriter(conn)
 
+	again:
 		msg, err := ir.ReadMessage()
 		if err != nil {
 			ln.Error(err, ln.F{"client_addr": conn.RemoteAddr().String()})
@@ -51,6 +57,10 @@ func main() {
 		}
 
 		if msg.Command != "PASS" {
+			if msg.Command == "CAP" {
+				goto again
+			}
+
 			ln.Log(ln.F{"action": "auth_failed", "client_addr": conn.RemoteAddr().String()})
 			iw.Writef(":%s ERROR :authentication failed", cfg.ServerName)
 			conn.Close()
@@ -66,31 +76,139 @@ func main() {
 
 		mc, err := madon.RestoreApp("ircsuite", cfg.MastodonInstance, cfg.MastodonClientID, cfg.MastodonClientSecret, &madon.UserToken{AccessToken: cfg.MastodonToken})
 		if err != nil {
-			ln.Error(ln.F{"action": "madon.RestoreApp"})
+			ln.Error(err, ln.F{"action": "madon.RestoreApp"})
 			iw.Writef(":%s ERROR :authentication failed", cfg.ServerName)
 			conn.Close()
 			continue
 		}
 		_ = mc
 
+		ctx, cancel := context.WithCancel(ctx)
+
 		s := &Server{
 			channels: map[string]struct{}{},
 			mc:       mc,
 
-			iw: iw,
-			ir: ir,
+			cfg:    &cfg,
+			cancel: cancel,
+			conn:   conn,
+			iw:     iw,
+			ir:     ir,
 		}
 
-		go s.HandleConn(ctx, conn)
+		go s.HandleConn(ctx)
 	}
 }
 
 type Server struct {
 	sync.Mutex // locked at per line execution
 
+	cfg      *Config
 	channels map[string]struct{} // channels the client has joined
 	mc       *madon.Client
 
-	iw *irc.Writer
-	ir *irc.Reader
+	cancel context.CancelFunc
+	conn   net.Conn
+	iw     *irc.Writer
+	ir     *irc.Reader
+
+	nickname   string
+	nick       bool
+	user       bool
+	registered bool
+}
+
+func (s *Server) F() ln.F {
+	return ln.F{
+		"registered":  s.registered,
+		"remote_addr": s.conn.RemoteAddr().String(),
+	}
+}
+
+func (s *Server) HandleConn(ctx context.Context) {
+	defer s.conn.Close()
+	defer s.cancel()
+
+	for {
+		if (s.nick && s.user) && !s.registered {
+			s.iw.Writef(":%s 001 * :Welcome to an IRC relay!", s.cfg.ServerName)
+			s.registered = true
+		}
+
+		msg, err := s.ir.ReadMessage()
+		if err != nil {
+			ln.Error(err, s.F(), ln.F{"action": "public_stream"})
+			return
+		}
+
+		pretty.Println(msg)
+
+		switch msg.Command {
+		case "NICK":
+			s.nick = true
+			s.nickname = msg.Params[0]
+
+			err := s.stream(ctx, "&user", "user", "")
+			if err != nil {
+				ln.Error(err, s.F(), ln.F{"action": "user_stream"})
+				return
+			}
+
+			err = s.stream(ctx, "&public", "public", "")
+			if err != nil {
+				ln.Error(err, s.F(), ln.F{"action": "public_stream"})
+				return
+			}
+
+		case "USER":
+			s.user = true
+		case "MODE":
+			s.iw.Writef(":%s MODE %s %s", s.cfg.ServerName, s.nickname, msg.Params[1])
+		case "PING":
+			msg.Host = s.cfg.ServerName
+			msg.Command = "PONG"
+			s.iw.WriteMessage(msg)
+		default:
+			s.iw.Writef(":%s 421 * :Unknown command %q", s.cfg.ServerName, msg.Command)
+			continue
+		}
+	}
+}
+
+func (s *Server) stream(ctx context.Context, chName, streamName, hashtag string) error {
+	evChan := make(chan madon.StreamEvent, 10)
+	stop := make(chan bool)
+	done := make(chan bool)
+
+	f := s.F()
+	f["channel"] = chName
+	f["stream"] = streamName
+	f["hashtag"] = hashtag
+
+	err := s.mc.StreamListener(streamName, hashtag, evChan, stop, done)
+	if err != nil {
+		ln.Error(err, f, ln.F{"action": "s.mc.streamListener"})
+	}
+
+	s.iw.Writef(":%s JOIN %s", s.nickname, chName)
+
+	go func() {
+		select {
+		case <-ctx.Done():
+			return
+		case <-stop:
+			return
+		case <-done:
+			return
+
+		case ev := <-evChan:
+			switch ev.Event {
+			case "update":
+				st := ev.Data.(madon.Status)
+				s.iw.Writef(":%s PRIVMSG %s :%s: %s%s", streamName, chName, st.Account.Username, st.SpoilerText+" ", strings.Replace(st.Content, "\n", " ", 0))
+			}
+		}
+	}()
+
+	return nil
 }
