@@ -178,7 +178,7 @@ func (s *Server) HandleConn(ctx context.Context) {
 				continue
 			}
 
-			err = s.stream(ctx, target, "hashtag", target)
+			err = s.stream(ctx, target, "hashtag", target[1:])
 			if err != nil {
 				ln.Error(err, s.F(), ln.F{"action": "hashtag_stream", "hashtag": target})
 			}
@@ -207,19 +207,21 @@ func (s *Server) stream(ctx context.Context, chName, streamName, hashtag string)
 	s.iw.Writef(":%s JOIN %s", s.nickname, chName)
 
 	go func() {
-		select {
-		case <-ctx.Done():
-			return
-		case <-stop:
-			return
-		case <-done:
-			return
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-stop:
+				return
+			case <-done:
+				return
 
-		case ev := <-evChan:
-			switch ev.Event {
-			case "update":
-				st := ev.Data.(madon.Status)
-				s.iw.Writef(":%s PRIVMSG %s :%s: %s%s", streamName, chName, st.Account.Username, st.SpoilerText+" ", strings.Replace(st.Content, "\n", " ", 0))
+			case ev := <-evChan:
+				switch ev.Event {
+				case "update":
+					st := ev.Data.(madon.Status)
+					s.iw.Writef(":%s PRIVMSG %s :%s: %s%s", streamName, chName, st.Account.Username, st.SpoilerText+" ", strings.Replace(st.Content, "\n", " ", 0))
+				}
 			}
 		}
 	}()
