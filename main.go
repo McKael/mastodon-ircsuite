@@ -7,6 +7,7 @@ import (
 	"sync"
 
 	"github.com/McKael/madon"
+	"github.com/McKael/madonctl/printer/html2text"
 	"github.com/Xe/ln"
 	"github.com/caarlos0/env"
 	_ "github.com/joho/godotenv/autoload"
@@ -215,10 +216,25 @@ func (s *Server) stream(ctx context.Context, chName, streamName, hashtag string)
 			case <-done:
 				return
 			case ev := <-evChan:
+				ln.Log(ln.F{"event": ev.Event, "streamName": streamName, "hashTag": hashtag})
 				switch ev.Event {
 				case "update":
 					st := ev.Data.(madon.Status)
-					s.iw.Writef(":%s PRIVMSG %s :%s: %s%s", streamName, chName, st.Account.Username, st.SpoilerText+" ", strings.Replace(st.Content, "\n", " ", 0))
+					text, err := html2text.Textify(st.Content)
+					if err != nil {
+						ln.Error(err, f, ln.F{"action": "html2text"})
+						break
+					}
+					if st.SpoilerText != "" {
+						s.iw.Writef(":%s PRIVMSG %s :%s: %s", streamName, chName, st.Account.Username, "CW: "+st.SpoilerText)
+					}
+					for _, l := range strings.Split(text, "\n") {
+						l = strings.TrimRight(l, " ")
+						if l == "" {
+							break
+						}
+						s.iw.Writef(":%s PRIVMSG %s :%s: %s", streamName, chName, st.Account.Username, l)
+					}
 				}
 			}
 		}
