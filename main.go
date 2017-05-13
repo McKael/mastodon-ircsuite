@@ -38,6 +38,7 @@ func main() {
 		ln.Fatal(ln.F{"err": err, "addr": cfg.ServerAddr})
 	}
 
+CONNECTION:
 	for {
 		ctx := context.Background()
 		conn, err := l.Accept()
@@ -48,19 +49,17 @@ func main() {
 		ir := irc.NewReader(conn)
 		iw := irc.NewWriter(conn)
 
-	again:
-		msg, err := ir.ReadMessage()
-		if err != nil {
-			ln.Error(err, ln.F{"client_addr": conn.RemoteAddr().String()})
-			conn.Close()
-			continue
+		var msg *irc.Message
+		for msg == nil || msg.Command == "CAP" {
+			msg, err = ir.ReadMessage()
+			if err != nil {
+				ln.Error(err, ln.F{"client_addr": conn.RemoteAddr().String()})
+				conn.Close()
+				continue CONNECTION
+			}
 		}
 
 		if msg.Command != "PASS" {
-			if msg.Command == "CAP" {
-				goto again
-			}
-
 			ln.Log(ln.F{"action": "auth_failed", "client_addr": conn.RemoteAddr().String()})
 			iw.Writef(":%s ERROR :authentication failed", cfg.ServerName)
 			conn.Close()
@@ -81,13 +80,21 @@ func main() {
 			conn.Close()
 			continue
 		}
-		_ = mc
+
+		acc, err := mc.GetCurrentAccount()
+		if err != nil {
+			ln.Error(err, ln.F{"action": "madon.GetCurrentAccount"})
+			iw.Writef(":%s ERROR :could not get current Mastodon account", cfg.ServerName)
+			conn.Close()
+			continue
+		}
 
 		ctx, cancel := context.WithCancel(ctx)
 
 		s := &Server{
 			channels: map[string]struct{}{},
 			mc:       mc,
+			mAccount: acc,
 
 			cfg:    &cfg,
 			cancel: cancel,
@@ -106,6 +113,7 @@ type Server struct {
 	cfg      *Config
 	channels map[string]struct{} // channels the client has joined
 	mc       *madon.Client
+	mAccount *madon.Account
 
 	cancel context.CancelFunc
 	conn   net.Conn
@@ -134,7 +142,7 @@ func (s *Server) HandleConn(ctx context.Context) {
 
 	for {
 		if (s.nick && s.user) && !s.registered {
-			s.iw.Writef(":%s 001 %s :Welcome to an IRC relay!", s.cfg.ServerName, s.nickname)
+			s.iw.Writef(":%s 001 %s :Welcome to an IRC relay, %s!", s.cfg.ServerName, s.nickname, s.mAccount.Acct)
 			s.registered = true
 
 			err := s.stream(ctx, "&user", "user", "")
@@ -175,7 +183,7 @@ func (s *Server) HandleConn(ctx context.Context) {
 			// hashtag streaming
 			target := msg.Params[0]
 			if target[0] != '#' {
-				s.iw.Writef("%s 404 %s :Unknown hashtag", s.cfg.ServerName, s.nickname)
+				s.iw.Writef(":%s 404 %s :Unknown hashtag (%s)", s.cfg.ServerName, s.nickname, target)
 				continue
 			}
 
