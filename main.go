@@ -210,12 +210,10 @@ func (s *Server) stream(ctx context.Context, chName, streamName, hashtag string)
 		for {
 			select {
 			case <-ctx.Done():
-				return
-			case <-stop:
+				close(stop)
 				return
 			case <-done:
 				return
-
 			case ev := <-evChan:
 				switch ev.Event {
 				case "update":
