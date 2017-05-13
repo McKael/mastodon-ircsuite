@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"net"
 	"strings"
 	"sync"
@@ -181,15 +182,24 @@ func (s *Server) HandleConn(ctx context.Context) {
 			s.iw.WriteMessage(msg)
 		case "JOIN":
 			// hashtag streaming
-			target := msg.Params[0]
-			if target[0] != '#' {
-				s.iw.Writef(":%s 404 %s :Unknown hashtag (%s)", s.cfg.ServerName, s.nickname, target)
-				continue
-			}
-
-			err = s.stream(ctx, target, "hashtag", target[1:])
-			if err != nil {
-				ln.Error(err, s.F(), ln.F{"action": "hashtag_stream", "hashtag": target})
+			for _, target := range strings.Split(msg.Params[0], ",") {
+				switch target[0] {
+				case '&':
+					if target == "&user" || target == "&local" || target == "&public" {
+						err = s.stream(ctx, target, target[1:], "")
+						if err != nil {
+							ln.Error(err, s.F(), ln.F{"action": "stream", "stream": target})
+						}
+					}
+				case '#':
+					err = s.stream(ctx, target, "hashtag", target[1:])
+					if err != nil {
+						ln.Error(err, s.F(), ln.F{"action": "hashtag_stream", "hashtag": target})
+					}
+				default:
+					s.iw.Writef(":%s 404 %s :Unknown hashtag (%s)", s.cfg.ServerName, s.nickname, target)
+					continue
+				}
 			}
 		default:
 			s.iw.Writef(":%s 421 %s :Unknown command %q", s.cfg.ServerName, s.nickname, msg.Command)
@@ -207,6 +217,11 @@ func (s *Server) stream(ctx context.Context, chName, streamName, hashtag string)
 	f["channel"] = chName
 	f["stream"] = streamName
 	f["hashtag"] = hashtag
+
+	if _, ok := s.channels[chName]; ok {
+		return errors.New("channel already joined")
+	}
+	s.channels[chName] = struct{}{}
 
 	err := s.mc.StreamListener(streamName, hashtag, evChan, stop, done)
 	if err != nil {
