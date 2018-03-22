@@ -31,12 +31,12 @@ func main() {
 	cfg := Config{}
 	err := env.Parse(&cfg)
 	if err != nil {
-		ln.Fatal(ln.F{"err": err})
+		ln.Fatal(context.TODO(), ln.F{"err": err})
 	}
 
 	l, err := net.Listen("tcp", cfg.ServerAddr)
 	if err != nil {
-		ln.Fatal(ln.F{"err": err, "addr": cfg.ServerAddr})
+		ln.Fatal(context.TODO(), ln.F{"err": err, "addr": cfg.ServerAddr})
 	}
 
 CONNECTION:
@@ -44,7 +44,7 @@ CONNECTION:
 		ctx := context.Background()
 		conn, err := l.Accept()
 		if err != nil {
-			ln.Error(err, ln.F{"addr": cfg.ServerAddr})
+			ln.Error(ctx, err, ln.F{"addr": cfg.ServerAddr})
 		}
 
 		ir := irc.NewReader(conn)
@@ -54,21 +54,21 @@ CONNECTION:
 		for msg == nil || msg.Command == "CAP" {
 			msg, err = ir.ReadMessage()
 			if err != nil {
-				ln.Error(err, ln.F{"client_addr": conn.RemoteAddr().String()})
+				ln.Error(ctx, err, ln.F{"client_addr": conn.RemoteAddr().String()})
 				conn.Close()
 				continue CONNECTION
 			}
 		}
 
 		if msg.Command != "PASS" {
-			ln.Log(ln.F{"action": "auth_failed", "client_addr": conn.RemoteAddr().String()})
+			ln.Log(ctx, ln.F{"action": "auth_failed", "client_addr": conn.RemoteAddr().String()})
 			iw.Writef(":%s ERROR :authentication failed", cfg.ServerName)
 			conn.Close()
 			continue
 		}
 
 		if msg.Params[0] != cfg.UserPassword {
-			ln.Log(ln.F{"action": "wrong_password", "client_addr": conn.RemoteAddr().String()})
+			ln.Log(ctx, ln.F{"action": "wrong_password", "client_addr": conn.RemoteAddr().String()})
 			iw.Writef(":%s ERROR :authentication failed", cfg.ServerName)
 			conn.Close()
 			continue
@@ -76,7 +76,7 @@ CONNECTION:
 
 		mc, err := madon.RestoreApp("ircsuite", cfg.MastodonInstance, cfg.MastodonClientID, cfg.MastodonClientSecret, &madon.UserToken{AccessToken: cfg.MastodonToken})
 		if err != nil {
-			ln.Error(err, ln.F{"action": "madon.RestoreApp"})
+			ln.Error(ctx, err, ln.F{"action": "madon.RestoreApp"})
 			iw.Writef(":%s ERROR :authentication failed", cfg.ServerName)
 			conn.Close()
 			continue
@@ -84,7 +84,7 @@ CONNECTION:
 
 		acc, err := mc.GetCurrentAccount()
 		if err != nil {
-			ln.Error(err, ln.F{"action": "madon.GetCurrentAccount"})
+			ln.Error(ctx, err, ln.F{"action": "madon.GetCurrentAccount"})
 			iw.Writef(":%s ERROR :could not get current Mastodon account", cfg.ServerName)
 			conn.Close()
 			continue
@@ -148,24 +148,24 @@ func (s *Server) HandleConn(ctx context.Context) {
 
 			err := s.stream(ctx, "&user", "user", "")
 			if err != nil {
-				ln.Error(err, s.F(), ln.F{"action": "user_stream"})
+				ln.Error(ctx, err, s.F(), ln.F{"action": "user_stream"})
 				return
 			}
 
 			err = s.stream(ctx, "&public", "public", "")
 			if err != nil {
-				ln.Error(err, s.F(), ln.F{"action": "public_stream"})
+				ln.Error(ctx, err, s.F(), ln.F{"action": "public_stream"})
 				return
 			}
 		}
 
 		msg, err := s.ir.ReadMessage()
 		if err != nil {
-			ln.Error(err, s.F(), ln.F{"action": "public_stream"})
+			ln.Error(ctx, err, s.F(), ln.F{"action": "public_stream"})
 			return
 		}
 
-		ln.Log(s.F(), ln.F{"verb": msg.Command})
+		ln.Log(ctx, s.F(), ln.F{"verb": msg.Command})
 
 		switch msg.Command {
 		case "NICK":
@@ -188,13 +188,13 @@ func (s *Server) HandleConn(ctx context.Context) {
 					if target == "&user" || target == "&local" || target == "&public" {
 						err = s.stream(ctx, target, target[1:], "")
 						if err != nil {
-							ln.Error(err, s.F(), ln.F{"action": "stream", "stream": target})
+							ln.Error(ctx, err, s.F(), ln.F{"action": "stream", "stream": target})
 						}
 					}
 				case '#':
 					err = s.stream(ctx, target, "hashtag", target[1:])
 					if err != nil {
-						ln.Error(err, s.F(), ln.F{"action": "hashtag_stream", "hashtag": target})
+						ln.Error(ctx, err, s.F(), ln.F{"action": "hashtag_stream", "hashtag": target})
 					}
 				default:
 					s.iw.Writef(":%s 404 %s :Unknown hashtag (%s)", s.cfg.ServerName, s.nickname, target)
@@ -225,7 +225,7 @@ func (s *Server) stream(ctx context.Context, chName, streamName, hashtag string)
 
 	err := s.mc.StreamListener(streamName, hashtag, evChan, stop, done)
 	if err != nil {
-		ln.Error(err, f, ln.F{"action": "s.mc.streamListener"})
+		ln.Error(ctx, err, f, ln.F{"action": "s.mc.streamListener"})
 	}
 
 	s.iw.Writef(":%s JOIN %s", s.nickname, chName)
@@ -239,13 +239,13 @@ func (s *Server) stream(ctx context.Context, chName, streamName, hashtag string)
 			case <-done:
 				return
 			case ev := <-evChan:
-				ln.Log(ln.F{"event": ev.Event, "streamName": streamName, "hashTag": hashtag})
+				ln.Log(ctx, ln.F{"event": ev.Event, "streamName": streamName, "hashTag": hashtag})
 				switch ev.Event {
 				case "update":
 					st := ev.Data.(madon.Status)
 					text, err := html2text.Textify(st.Content)
 					if err != nil {
-						ln.Error(err, f, ln.F{"action": "html2text"})
+						ln.Error(ctx, err, f, ln.F{"action": "html2text"})
 						break
 					}
 					if st.SpoilerText != "" {
